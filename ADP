@@ -1,0 +1,69 @@
+#!/bin/bash
+# -------------------------------------------------------------------------
+# ADP File vs Database Line Count Validation Script
+# -------------------------------------------------------------------------
+
+# Configuration
+FILE_DIR="/app/Data/ADP"
+FILE_NAME=$(ls -t $FILE_DIR/ADP* 2>/dev/null | head -1)  # pick latest ADP file
+DB_USER="your_sybase_user"
+DB_PASS="your_sybase_password"
+DB_NAME="your_sybase_db"
+DB_SERVER="your_sybase_server"
+MAIL_TO="support_team@yourcompany.com"
+MAIL_SUBJECT=""
+MAIL_BODY=""
+LOG_FILE="/app/Data/adp_check_$(date +%Y%m%d_%H%M%S).log"
+
+echo "--------------------------------------------" >> "$LOG_FILE"
+echo "ADP Validation Run at $(date)" >> "$LOG_FILE"
+echo "--------------------------------------------" >> "$LOG_FILE"
+
+# Step 1: Check if file exists
+if [ ! -f "$FILE_NAME" ]; then
+    MAIL_SUBJECT="FAILURE: No Upstream ADP File Found"
+    MAIL_BODY="No ADP file was found under $FILE_DIR. Validation stopped."
+    echo "$MAIL_BODY" >> "$LOG_FILE"
+    echo -e "$MAIL_BODY" | mail -s "$MAIL_SUBJECT" "$MAIL_TO"
+    exit 1
+fi
+
+# Step 2: Get file line count
+UPSTREAM_COUNT=$(wc -l < "$FILE_NAME")
+echo "Upstream file: $FILE_NAME has $UPSTREAM_COUNT lines" >> "$LOG_FILE"
+
+# Step 3: Get database table count
+DB_COUNT=$(isql -U$DB_USER -P$DB_PASS -S$DB_SERVER -D$DB_NAME -b -w200 <<EOF | awk 'NR==3 {print $1}'
+select count(*) from CMIS_ADP
+go
+EOF
+)
+
+# Clean up any non-numeric output
+DB_COUNT=$(echo $DB_COUNT | tr -d '[:space:]')
+
+echo "Database table CMIS_ADP has $DB_COUNT rows" >> "$LOG_FILE"
+
+# Step 4: Compare
+if [ "$UPSTREAM_COUNT" -eq "$DB_COUNT" ]; then
+    MAIL_SUBJECT="SUCCESS: ADP Data Load Validation Passed"
+    MAIL_BODY="ADP File Validation Successful\n
+Upstream File: $FILE_NAME\n
+File Count: $UPSTREAM_COUNT\n
+Database Count: $DB_COUNT\n
+Status: SUCCESS"
+else
+    MAIL_SUBJECT="FAILURE: ADP Data Mismatch Detected"
+    MAIL_BODY="ADP File Validation Failed\n
+Upstream File: $FILE_NAME\n
+File Count: $UPSTREAM_COUNT\n
+Database Count: $DB_COUNT\n
+Difference: $((UPSTREAM_COUNT - DB_COUNT))\n
+Status: FAILURE"
+fi
+
+# Step 5: Send email and log
+echo -e "$MAIL_BODY" >> "$LOG_FILE"
+echo -e "$MAIL_BODY" | mail -s "$MAIL_SUBJECT" "$MAIL_TO"
+
+echo "Validation completed at $(date)" >> "$LOG_FILE"
